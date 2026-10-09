@@ -191,6 +191,8 @@ fetch_live() {
   gh pr view "$n" --repo "$repo" --json headRefOid > "$dir/pr2.json"
 }
 
+dir=""
+
 main() {
   local target="" want_json=0 json_file="" trusted="" fixture=""
   while [ $# -gt 0 ]; do
@@ -210,14 +212,13 @@ main() {
   [[ -z "$trusted" || "$trusted" =~ ^[A-Za-z0-9_,-]+$ ]] || die "trusted-actors must be a comma-separated list of github logins"
   command -v jq >/dev/null || die "jq is required"
 
-  local dir
   if [ -n "$fixture" ]; then
     [ -d "$fixture" ] || die "fixture dir not found: $fixture"
     dir=$fixture
   else
     command -v gh >/dev/null || die "gh is required"
     dir=$(mktemp -d)
-    trap 'rm -rf "$dir"' EXIT
+    trap 'rm -rf "${dir:-}"' EXIT
     fetch_live "$dir" "${target%#*}" "${target##*#}" || die "could not read $target from github (read-only gh calls failed)"
   fi
 
