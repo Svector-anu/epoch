@@ -1,3 +1,4 @@
+# shellcheck shell=bash disable=SC2034
 # shared fixtures for the gate tests. source it; it defines data and helpers, runs nothing.
 # one scenario directory holds both the epoch-check fixture (pr.json ...) and the files the
 # gh stub serves, so the two gates can be pointed at identical facts.

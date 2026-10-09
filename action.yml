@@ -10,9 +10,16 @@ inputs:
     required: false
     default: ""
   trusted-actors:
-    description: comma-separated github logins allowed to post receipts. empty means any account (who posted is always printed).
+    description: comma-separated github logins whose review and proof receipts count. required, because anyone can comment on a pull request.
+    required: true
+  order-repo:
+    description: owner/repo whose default branch holds the work orders (memory/topics/*/orders). defaults to the pull request's repo.
     required: false
     default: ""
+  allow-author-receipts:
+    description: "true to count receipts posted by the pull request's own author (a one-token setup). default false."
+    required: false
+    default: "false"
   token:
     description: read-only token (pull-requests, checks, statuses, contents read).
     required: false
@@ -39,6 +46,8 @@ runs:
         GH_TOKEN: ${{ inputs.token }}
         EPOCH_PR: ${{ inputs.pr }}
         EPOCH_TRUSTED: ${{ inputs.trusted-actors }}
+        EPOCH_ORDER_REPO: ${{ inputs.order-repo }}
+        EPOCH_ALLOW_AUTHOR: ${{ inputs.allow-author-receipts }}
         EPOCH_FAIL: ${{ inputs.fail-when-not-ready }}
         EVENT_PR: ${{ github.event.pull_request.number }}
         REPO: ${{ github.repository }}
@@ -49,7 +58,9 @@ runs:
         [ -n "$pr" ] || { echo "epoch-check: no pr input and the event has no pull request" >&2; exit 2; }
         case "$pr" in *#*) target=$pr ;; *) target="$REPO#$pr" ;; esac
         args=("$target" --json-file "$RUNNER_TEMP/epoch-check.json")
-        [ -z "$EPOCH_TRUSTED" ] || args+=(--trusted-actors "$EPOCH_TRUSTED")
+        args+=(--trusted-actors "$EPOCH_TRUSTED")
+        [ -z "$EPOCH_ORDER_REPO" ] || args+=(--order-repo "$EPOCH_ORDER_REPO")
+        [ "$EPOCH_ALLOW_AUTHOR" != "true" ] || args+=(--allow-author-receipts)
         code=0
         "$ACTION_PATH/scripts/epoch-check.sh" "${args[@]}" || code=$?
         if [ "$code" -eq 2 ]; then exit 2; fi

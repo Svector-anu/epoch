@@ -2,6 +2,7 @@
 # deterministic tests for the proof gate: a stub gh on PATH, no network.
 # the matrix runs identical facts through both gates (upstream/scripts/dev-loop-proof.sh verify
 # and scripts/epoch-check.sh) and requires them to agree.
+# shellcheck disable=SC2016,SC2034  # eval snippets and jq filters are single-quoted on purpose, and use these names
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -9,6 +10,7 @@ ROOT=$(cd "$HERE/../.." && pwd)
 CHECK=$ROOT/scripts/epoch-check.sh
 DLP=$ROOT/upstream/scripts/dev-loop-proof.sh
 EVIDENCE=$ROOT/scripts/epoch-evidence.sh
+# shellcheck source=lib/scenario.sh
 source "$HERE/lib/scenario.sh"
 TRUSTED+=,$BUILDER,mallory
 WORK=$(mktemp -d)
@@ -122,6 +124,8 @@ for kind in proof review; do
   base "$d"
   if [ "$kind" = proof ]; then idx=1; want=needs-prove; else idx=0; want=needs-review; fi
   mutate "$d" comments.json ".[$idx].user.login = \"$BUILDER\""
+  # the run was dispatched by the same account, as the gate requires
+  if [ "$kind" = proof ]; then mutate "$d" "$RUN" ".actor.login = \"$BUILDER\" | .triggering_actor.login = \"$BUILDER\""; fi
   code=0
   out=$(GH_STUB_DIR=$d "$CHECK" "$TARGET" --json --fixture "$d" --trusted-actors "$TRUSTED") || code=$?
   if [ "$code" = 1 ] && [ "$(jq -r .next <<<"$out")" = "$want" ]; then ok "author-posted $kind receipt refused"; else bad "author-posted $kind receipt refused: exit $code next $(jq -r .next <<<"$out")"; fi

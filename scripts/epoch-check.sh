@@ -3,9 +3,15 @@
 # read-only: bash + jq + gh. never writes to the pull request.
 set -euo pipefail
 
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
 usage() {
   cat >&2 <<'USAGE'
-usage: epoch-check.sh <owner/repo#N> [--json] [--json-file FILE] [--trusted-actors a,b] [--fixture DIR]
+usage: epoch-check.sh <owner/repo#N> --trusted-actors a,b [--json] [--json-file FILE] [--order-repo owner/repo]
+                      [--allow-author-receipts] [--fixture DIR]
+  --trusted-actors         required: the logins whose review and proof receipts count
+  --order-repo             repo whose default branch holds the work orders (default: the pull request's repo)
+  --allow-author-receipts  count receipts posted by the pull request's own author (one-token setups)
   exit 0 ready, 1 not ready, 2 usage or read error
 USAGE
   exit 2
@@ -57,14 +63,19 @@ def proof_valid($r; $target; $sha):
               and (.evidence_url | ascii_downcase)
                   == ("https://github.com/" + $repo + "/actions/runs/" + (.evidence_run_id | tostring) | ascii_downcase))));
 
-# receipt-bearing items (reviews and comments) bound to this head, by trusted authors only
-def candidates($k; $items; $sha; $trusted):
+# receipt-bearing items (reviews and comments) bound to this head, by trusted authors only.
+# the pull request's own author does not count unless $allow_author: whoever wrote the change
+# cannot also vouch for it.
+def candidates($k; $items; $sha; $trusted; $author; $allow_author):
   [$items[]
    | select(.body | contains(marker($k)))
-   | select(($trusted | length) == 0 or ((.author | ascii_downcase) as $a | any($trusted[]; . == $a)))]
-  | {at_head: map(select((.body | contains("\"sha\":\"" + $sha + "\"")) and (.source == "comment" or .commit == $sha))),
-     all: .}
+   | select((.author | ascii_downcase) as $a | any($trusted[]; . == $a))] as $trusted_items
+  | ($trusted_items | map(select($allow_author or ((.author | ascii_downcase) != $author)))) as $all
+  | {at_head: ($all | map(select((.body | contains("\"sha\":\"" + $sha + "\"")) and (.source == "comment" or .commit == $sha)))),
+     all: $all,
+     by_author: (($trusted_items | length) - ($all | length))}
   | . + {stale: ((.all | length) - (.at_head | length))};
+def author_note($c): if $c.by_author > 0 then "; \($c.by_author) by the pull request author do not count (--allow-author-receipts)" else "" end;
 
 def ci_state: if .__typename == "CheckRun" then
     {name, conclusion: ((.conclusion | select(. != null and . != "")) // .status), url: .detailsUrl,
@@ -97,9 +108,10 @@ $pr[0] as $p
 | ([($reviews[0] // [])[] | {source: "review", author: (.user.login // "ghost"), url: .html_url, commit: .commit_id, body: (.body // "")}]
    + [($comments[0] // [])[] | {source: "comment", author: (.user.login // "ghost"), url: .html_url, commit: null, body: (.body // "")}]) as $items
 | ($trusted | map(ascii_downcase)) as $tr
-| candidates("review"; $items; $sha; $tr) as $rc
+| ($p.author.login // "" | ascii_downcase) as $author
+| candidates("review"; $items; $sha; $tr; $author; $allow_author) as $rc
 | (if ($rc.at_head | length) == 0 then
-     {state: "absent", reason: (if $rc.stale > 0 then "no review receipt at this head; \($rc.stale) at other commits do not count" else "no review receipt at this head" end)}
+     {state: "absent", reason: ((if $rc.stale > 0 then "no review receipt at this head; \($rc.stale) at other commits do not count" else "no review receipt at this head" end) + author_note($rc))}
    elif ($rc.at_head | length) > 1 then
      {state: "multiple", reason: "\($rc.at_head | length) receipt-bearing review comments at this head, expected exactly one",
       by: [$rc.at_head[].author]}
@@ -111,16 +123,18 @@ $pr[0] as $p
              actionable: ($x.receipt.critical > 0 or $x.receipt.issues > 0), by: [$it.author], url: $it.url}
        end
    end) as $review
-| candidates("proof"; $items; $sha; $tr) as $pc
+| candidates("proof"; $items; $sha; $tr; $author; $allow_author) as $pc
 | (if ($pc.at_head | length) == 0 then
-     {state: "absent", reason: (if $pc.stale > 0 then "no proof receipt at this head; \($pc.stale) at other commits do not count" else "no proof receipt at this head" end)}
+     {state: "absent", reason: ((if $pc.stale > 0 then "no proof receipt at this head; \($pc.stale) at other commits do not count" else "no proof receipt at this head" end) + author_note($pc))}
    elif ($pc.at_head | length) > 1 then
      {state: "multiple", reason: "\($pc.at_head | length) receipt-bearing comments at this head, expected exactly one", by: [$pc.at_head[].author]}
    else $pc.at_head[0] as $it | parse("proof"; $it.body) as $x
      | if ($x.ok | not) then {state: "invalid", reason: $x.reason, by: [$it.author], url: $it.url}
        elif (proof_valid($x.receipt; $target; $sha) | not) then
          {state: "invalid", reason: "proof receipt is malformed or inconsistent (key set, target, sha, verdict, evidence url)", by: [$it.author], url: $it.url}
-       else {state: "proven", kind: $x.receipt.kind, evidence_url: $x.receipt.evidence_url, by: [$it.author], url: $it.url}
+       elif $evidence_error != "" then
+         {state: "invalid", reason: "evidence run rejected: \($evidence_error)", by: [$it.author], url: $it.url}
+       else {state: "proven", kind: $x.receipt.kind, evidence_url: $x.receipt.evidence_url, by: [$it.author], url: $it.url, receipt: $x.receipt}
        end
    end) as $proof
 | (($pr2[0].headRefOid // $sha) as $now | if $now != $sha then {from: $sha, to: $now} else null end) as $moved
@@ -173,10 +187,10 @@ render() {
 
 fetch_live() {
   local dir=$1 repo=$2 n=$3 owner=${2%%/*} name=${2#*/} raw
-  raw=$(gh pr view "$n" --repo "$repo" --json number,state,isDraft,headRefOid,mergeable,mergeStateStatus,statusCheckRollup)
+  raw=$(gh pr view "$n" --repo "$repo" --json number,state,isDraft,headRefOid,mergeable,mergeStateStatus,author,statusCheckRollup)
   if [ "$(jq -r '.state + "/" + .mergeStateStatus' <<<"$raw")" = "OPEN/UNKNOWN" ]; then
     sleep 5
-    raw=$(gh pr view "$n" --repo "$repo" --json number,state,isDraft,headRefOid,mergeable,mergeStateStatus,statusCheckRollup)
+    raw=$(gh pr view "$n" --repo "$repo" --json number,state,isDraft,headRefOid,mergeable,mergeStateStatus,author,statusCheckRollup)
   fi
   jq 'del(.statusCheckRollup)' <<<"$raw" > "$dir/pr.json"
   jq '.statusCheckRollup // []' <<<"$raw" > "$dir/checks.json"
@@ -194,13 +208,15 @@ fetch_live() {
 dir=""
 
 main() {
-  local target="" want_json=0 json_file="" trusted="" fixture=""
+  local target="" want_json=0 json_file="" trusted="" fixture="" order_repo="" allow_author=false
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) want_json=1 ;;
       --json-file) [ $# -ge 2 ] || usage; json_file=$2; shift ;;
       --trusted-actors) [ $# -ge 2 ] || usage; trusted=$2; shift ;;
       --fixture) [ $# -ge 2 ] || usage; fixture=$2; shift ;;
+      --order-repo) [ $# -ge 2 ] || usage; order_repo=$2; shift ;;
+      --allow-author-receipts) allow_author=true ;;
       -h|--help) usage ;;
       -*) usage ;;
       *) [ -z "$target" ] || usage; target=$1 ;;
@@ -208,9 +224,14 @@ main() {
     shift
   done
   [ -n "$target" ] || usage
-  [[ "$target" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*$ ]] || die "target must look like owner/repo#123, got: $target"
-  [[ -z "$trusted" || "$trusted" =~ ^[A-Za-z0-9_,-]+$ ]] || die "trusted-actors must be a comma-separated list of github logins"
   command -v jq >/dev/null || die "jq is required"
+  [[ "$target" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*$ ]] || die "target must look like owner/repo#123, got: $target"
+  [[ "$trusted" =~ ^[A-Za-z0-9_,-]*$ ]] || die "trusted-actors must be a comma-separated list of github logins"
+  local trusted_json
+  trusted_json=$(jq -cn --arg t "$trusted" '$t | split(",") | map(select(length > 0))')
+  [ "$trusted_json" != "[]" ] || die "--trusted-actors is required: name the accounts whose review and proof receipts count (anyone can comment on a pull request)"
+  [[ -z "$order_repo" || "$order_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "order-repo must look like owner/repo, got: $order_repo"
+  [ -n "$order_repo" ] || order_repo=${target%#*}
 
   if [ -n "$fixture" ]; then
     [ -d "$fixture" ] || die "fixture dir not found: $fixture"
@@ -229,12 +250,29 @@ main() {
   local pr2=/dev/null
   [ -f "$dir/pr2.json" ] && pr2=$dir/pr2.json
 
-  local trusted_json result
-  trusted_json=$(jq -cn --arg t "$trusted" '$t | split(",") | map(select(length > 0))')
-  result=$(jq -n --arg target "$target" --argjson trusted "$trusted_json" \
-    --slurpfile pr "$dir/pr.json" --slurpfile checks "$dir/checks.json" --slurpfile threads "$dir/threads.json" \
-    --slurpfile reviews "$dir/reviews.json" --slurpfile comments "$dir/comments.json" --slurpfile pr2 "$pr2" \
-    "$DECIDE") || die "could not evaluate the pull request state (unexpected input shape)"
+  if [ "$allow_author" != true ] && [ -z "$(jq -r '.author.login // empty' "$dir/pr.json")" ]; then
+    die "the pull request author is unknown, so author receipts cannot be told apart; pass --allow-author-receipts to count them"
+  fi
+
+  decide() { # evidence-error: the verdict, with the proof receipt's evidence run judged by $1 ("" means accepted)
+    jq -n --arg target "$target" --argjson trusted "$trusted_json" --argjson allow_author "$allow_author" \
+      --arg evidence_error "$1" \
+      --slurpfile pr "$dir/pr.json" --slurpfile checks "$dir/checks.json" --slurpfile threads "$dir/threads.json" \
+      --slurpfile reviews "$dir/reviews.json" --slurpfile comments "$dir/comments.json" --slurpfile pr2 "$pr2" \
+      "$DECIDE"
+  }
+
+  local result evidence_error=""
+  result=$(decide "") || die "could not evaluate the pull request state (unexpected input shape)"
+  if [ "$(jq -r '.proof.receipt.kind // ""' <<<"$result")" = verify-run ]; then
+    command -v gh >/dev/null || die "gh is required to look up the evidence run"
+    evidence_error=$(bash "$HERE/epoch-evidence.sh" check "$target" "$(jq -r .sha <<<"$result")" \
+      "$(jq -c .proof.receipt <<<"$result")" "$order_repo" "$(jq -r '.proof.by[0]' <<<"$result")" 2>&1 >/dev/null) \
+      || { evidence_error=${evidence_error:-evidence check failed}; evidence_error=$(printf '%s' "$evidence_error" | tr '\n' ' ' | cut -c1-300); }
+    if [ -n "$evidence_error" ]; then
+      result=$(decide "$evidence_error") || die "could not evaluate the pull request state (unexpected input shape)"
+    fi
+  fi
 
   [ -z "$json_file" ] || printf '%s\n' "$result" > "$json_file"
   if [ "$want_json" -eq 1 ]; then printf '%s\n' "$result"; else render "$result"; fi

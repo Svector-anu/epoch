@@ -4,6 +4,7 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CHECK=$HERE/../epoch-check.sh
+# shellcheck source=lib/scenario.sh
 source "$HERE/lib/scenario.sh"
 TRUSTED+=,other-bot
 WORK=$(mktemp -d)
