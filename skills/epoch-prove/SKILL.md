@@ -39,7 +39,7 @@ Keys must be exactly `evidence_run_id`, `evidence_url`, `kind`, `order`, `schema
 
 Every refusal below says what it checked and what it found, ends the run, and posts no receipt.
 
-0. **Check this instance has the verify gate.** The receipt below is a `verify-run` receipt, and an aeon without that kind rejects it. Require `grep -q verify-run scripts/dev-loop-proof.sh`. If it is absent, stop with `PROVE_UNSUPPORTED`, say that this instance's `scripts/dev-loop-proof.sh` does not know the `verify-run` kind, and post nothing. The fix is to copy the two files from the pack's `upstream/` folder into the instance (see the pack README).
+0. **Check this instance has the verify gate.** The receipt below is a `verify-run` receipt, and an aeon without that kind rejects it. Require `grep -q verify-run scripts/dev-loop-proof.sh` and `grep -q commands_sha256 .github/workflows/epoch-verify.yml` and that `scripts/epoch-evidence.sh` exists and is byte-identical to the pack's copy. If any is absent, stop with `PROVE_UNSUPPORTED`, say which piece this instance lacks, and post nothing. The fix is to copy the files from the pack's `upstream/` folder into the instance (see the pack README).
 
 1. **Pin the PR.** Read it from GitHub, not local state:
 
@@ -64,7 +64,7 @@ Every refusal below says what it checked and what it found, ends the run, and po
 
    The path must match `^memory/topics/[a-z0-9-]+/orders/[a-z0-9-]+\.md$`. This skill does not guess commands from the diff, from CI config, or from the PR's own claims.
 
-3. **Extract the verify commands.** Format rule: one command per line, each run on its own from the repo root, nothing carried over between lines (no `cd`, `export`, `\` continuation or multi-line construct). In the order's `VERIFY` section, candidate lines are those inside a fenced code block or indented by four or more spaces. Prose is not a command. Strip the indentation and then skip exactly what `.github/workflows/epoch-verify.yml` skips: blank lines and lines whose first non-space character is `#`. Every remaining line is one command, in order. Refuse with `PROVE_MISSING_VERIFY` if the section is absent, yields no command, or has a line ending in `\` (it cannot run on its own), and say which you found. Refuse with `PROVE_UNSAFE` if any line mentions `GH_TOKEN`, `GITHUB_TOKEN`, `secrets.`, `git push`, `gh `, `sudo`, or pipes a download into a shell (`curl` or `wget` followed by `| sh` or `| bash`). The order is the authority on what runs, but not on reaching for credentials or writing back to GitHub; the workflow has neither.
+3. **Extract the verify commands.** Format rule: one command per line, each run on its own from the repo root, nothing carried over between lines (no `cd`, `export`, `\` continuation or multi-line construct). In the order's `VERIFY` section, candidate lines are those inside a fenced code block or indented by four or more spaces. Prose is not a command. Do not extract them by hand: run `bash scripts/epoch-evidence.sh commands <order-file>`. It strips the indentation and skips exactly what `.github/workflows/epoch-verify.yml` skips (blank lines and lines whose first non-space character is `#`), and it is the same extraction the gate uses to recompute the hash in step 5. Every line it prints is one command, in order. It exits non-zero when the order has no VERIFY section, several, or no commands. Refuse with `PROVE_MISSING_VERIFY` if the section is absent, yields no command, or has a line ending in `\` (it cannot run on its own), and say which you found. Refuse with `PROVE_UNSAFE` if any line mentions `GH_TOKEN`, `GITHUB_TOKEN`, `secrets.`, `git push`, `gh `, `sudo`, or pipes a download into a shell (`curl` or `wget` followed by `| sh` or `| bash`). The order is the authority on what runs, but not on reaching for credentials or writing back to GitHub; the workflow has neither.
 
 4. **Require the unmodified workflow on the head.** `.github/workflows/epoch-verify.yml` must exist on the default branch of the repository that hosts the PR (that is where the dispatch below runs), and the branch's copy is what Actions runs. Compare its blob SHA with the default branch's:
 
@@ -76,21 +76,24 @@ Every refusal below says what it checked and what it found, ends the run, and po
 
    Missing on either side, or the two differ, is `PROVE_UNSUPPORTED`: a PR that edits the verifier could make any run report success. Dispatch nothing.
 
-5. **Dispatch the verify run** against the head branch, with a unique `dispatch_id` that starts with `verify-`. Pass the commands inline, through a file so no command passes through a shell argument:
+5. **Dispatch the verify run** against the head branch, with a unique `dispatch_id` that starts with `verify-`. Pass the commands inline, through a file so no command passes through a shell argument, and the sha256 of exactly those commands. The workflow refuses to run commands that do not hash to `commands_sha256`, and titles the run `epoch-verify <sha> <commands_sha256> <dispatch_id>`. The gate later recomputes that hash from the order on the default branch, so the run only counts as proof of this order's commands:
 
    ```
+   bash scripts/epoch-evidence.sh commands <order-file> > <commands-file>
+   commands_sha256=$(bash scripts/epoch-evidence.sh hash <order-file>)
    dispatch_id="verify-<N>-$(date -u +%Y%m%dT%H%M%SZ)-${RANDOM}"
    gh workflow run epoch-verify.yml --repo <owner>/<repo> --ref "<ref>" \
      -f sha="<sha>" -f order="<order-id>" -f dispatch_id="$dispatch_id" \
-     -f commands="$(cat <commands-file>)"
+     -f commands_sha256="$commands_sha256" -f commands="$(cat <commands-file>)"
    ```
 
    Find the run only by its exact title, never by picking the newest:
 
    ```
+   title="epoch-verify <sha> $commands_sha256 $dispatch_id"
    gh run list --repo <owner>/<repo> --workflow epoch-verify.yml --branch "<ref>" \
      --event workflow_dispatch --json databaseId,displayTitle,headSha,status,conclusion,url \
-     | jq --arg id "$dispatch_id" '[.[] | select(.displayTitle == $id)]'
+     | jq --arg t "$title" '[.[] | select(.displayTitle == $t)]'
    ```
 
    Poll in the foreground, `timeout`-wrapped, until exactly one run matches and `status` is `completed`, for up to 30 minutes. Zero or two matches at the end is `PROVE_MISSING_EVIDENCE`. A dispatch that fails is `PROVE_DISPATCH_FAILED`. Never dispatch twice for one target in one run.
