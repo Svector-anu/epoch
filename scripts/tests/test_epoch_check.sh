@@ -4,41 +4,15 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CHECK=$HERE/../epoch-check.sh
-TARGET=acme/widget#7
-SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-OLD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+source "$HERE/lib/scenario.sh"
+TRUSTED+=,other-bot
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
+export PATH=$HERE/lib:$PATH
+
 pass=0
 fail=0
-
-review_comment() { # sha verdict critical issues author
-  local findings="" i
-  for ((i = 0; i < $3; i++)); do findings+=$'- [CRITICAL] a problem\n'; done
-  for ((i = 0; i < $4; i++)); do findings+=$'- [ISSUE] a smell\n'; done
-  jq -cn --arg t "$TARGET" --arg s "$1" --arg v "$2" --argjson c "$3" --argjson n "$4" --arg a "$5" --arg f "$findings" '
-    {user: {login: $a}, html_url: "https://github.com/acme/widget/pull/7#c1",
-     body: ("review\n" + $f + "\n<!-- aeon-review:" + ({schema: 1, target: $t, sha: $s, verdict: $v, critical: $c, issues: $n} | tojson) + " -->\n")}'
-}
-
-proof_comment() { # sha extra-json author
-  jq -cn --arg t "$TARGET" --arg s "$1" --argjson x "$2" --arg a "$3" '
-    ({schema: 1, target: $t, sha: $s, verdict: "proven", kind: "verify-run", order: "build-it",
-      evidence_run_id: 99, evidence_url: "https://github.com/acme/widget/actions/runs/99"} + $x) as $r
-    | {user: {login: $a}, html_url: "https://github.com/acme/widget/pull/7#c2",
-       body: ("proof\n<!-- aeon-proof:" + ($r | tojson) + " -->")}'
-}
-
-base() { # dir: a fully ready fixture
-  local d=$1
-  mkdir -p "$d"
-  jq -n --arg s "$SHA" '{number: 7, state: "OPEN", isDraft: false, headRefOid: $s, mergeable: "MERGEABLE", mergeStateStatus: "CLEAN"}' > "$d/pr.json"
-  echo '[{"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"https://ci/1"}]' > "$d/checks.json"
-  echo '[]' > "$d/threads.json"
-  echo '[]' > "$d/reviews.json"
-  jq -s '.' <(review_comment "$SHA" approve-ready 0 0 reviewer-bot) <(proof_comment "$SHA" '{}' prover-bot) > "$d/comments.json"
-}
 
 # case <name> <expected-exit> <expected-next> <jq-mutation-on-file:file:filter>...
 run_case() {
@@ -52,7 +26,7 @@ run_case() {
     jq "$filter" "$d/$file.json" > "$d/tmp" && mv "$d/tmp" "$d/$file.json"
   done
   code=0
-  out=$("$CHECK" "$TARGET" --json --fixture "$d") || code=$?
+  out=$(GH_STUB_DIR=$d "$CHECK" "$TARGET" --json --fixture "$d" --trusted-actors "$TRUSTED") || code=$?
   next=$(jq -r .next <<<"$out")
   if [ "$code" = "$want_exit" ] && [ "$next" = "$want_next" ]; then
     pass=$((pass + 1)); printf 'ok   %-28s exit=%s next=%s\n' "$name" "$code" "$next"
@@ -98,7 +72,7 @@ d=$WORK/head_moved
 base "$d"
 jq -n --arg s "$OLD" '{headRefOid: $s}' > "$d/pr2.json"
 code=0
-out=$("$CHECK" "$TARGET" --json --fixture "$d") || code=$?
+out=$(GH_STUB_DIR=$d "$CHECK" "$TARGET" --json --fixture "$d" --trusted-actors "$TRUSTED") || code=$?
 if [ "$code" = 1 ] && [ "$(jq -r '.head_moved.to' <<<"$out")" = "$OLD" ] && [ "$(jq -r '.blocking[0]' <<<"$out")" = "head moved from $SHA to $OLD: receipts at the old head no longer count" ]; then
   pass=$((pass + 1)); echo "ok   head_moved                   exit=1"
 else
@@ -109,7 +83,7 @@ fi
 d=$WORK/trusted
 base "$d"
 code=0
-out=$("$CHECK" "$TARGET" --json --fixture "$d" --trusted-actors reviewer-bot) || code=$?
+out=$(GH_STUB_DIR=$d "$CHECK" "$TARGET" --json --fixture "$d" --trusted-actors reviewer-bot) || code=$?
 if [ "$code" = 1 ] && [ "$(jq -r .next <<<"$out")" = needs-prove ]; then
   pass=$((pass + 1)); echo "ok   trusted_actors_filter        exit=1 next=needs-prove"
 else
@@ -117,7 +91,8 @@ else
 fi
 
 # the receipt posters are named
-out=$("$CHECK" "$TARGET" --fixture "$WORK/ready")
+base "$WORK/ready"
+out=$(GH_STUB_DIR=$WORK/ready "$CHECK" "$TARGET" --fixture "$WORK/ready" --trusted-actors "$TRUSTED")
 if grep -q 'by reviewer-bot' <<<"$out" && grep -q 'by prover-bot' <<<"$out"; then
   pass=$((pass + 1)); echo "ok   names_receipt_authors"
 else
@@ -127,7 +102,7 @@ fi
 # input validation happens before any read
 for bad in "acme/widget" "acme/widget#0" "acme widget#1" "\$(id)/x#1" "acme/widget#1;ls"; do
   code=0
-  "$CHECK" "$bad" --fixture "$WORK/ready" >/dev/null 2>&1 || code=$?
+  "$CHECK" "$bad" --fixture "$WORK/ready" --trusted-actors "$TRUSTED" >/dev/null 2>&1 || code=$?
   if [ "$code" = 2 ]; then pass=$((pass + 1)); echo "ok   rejects '$bad'"; else fail=$((fail + 1)); echo "FAIL rejects '$bad' (exit $code)"; fi
 done
 
