@@ -82,15 +82,15 @@ to have it advance on its own, schedule the conductor in your `aeon.yml`. a sens
 - an aeon instance recent enough to have `scripts/dev-loop-review.sh` and `scripts/dev-loop-proof.sh`. a fork made through [aeon connect](https://www.aeon.fun/connect) works.
 - `GH_GLOBAL`: a github token that can read the repos you point epoch at, push branches, write pull requests and dispatch workflows. it is the one secret epoch asks for.
 - whatever model credential your instance already uses.
-- for the prove stage, two pieces that are being proposed to aeon upstream: the `verify-run` receipt kind in `scripts/dev-loop-proof.sh`, and `.github/workflows/epoch-verify.yml`. until they are merged, copy them from this pack's `upstream/` folder into your aeon repo and commit them:
+- for the prove stage, three pieces that are being proposed to aeon upstream: the `verify-run` receipt kind in `scripts/dev-loop-proof.sh`, the evidence check in `scripts/epoch-evidence.sh`, and `.github/workflows/epoch-verify.yml`. until they are merged, copy them from this pack's `upstream/` folder into your aeon repo and commit them. they go together: the script and the workflow agree on how a run is titled.
 
   ```
   git clone https://github.com/Svector-anu/epoch /tmp/epoch
-  cp /tmp/epoch/upstream/scripts/dev-loop-proof.sh scripts/
+  cp /tmp/epoch/upstream/scripts/dev-loop-proof.sh /tmp/epoch/upstream/scripts/epoch-evidence.sh scripts/
   cp /tmp/epoch/upstream/.github/workflows/epoch-verify.yml .github/workflows/
   ```
 
-  the copy of `dev-loop-proof.sh` is aeon's own script plus the new receipt kind; the existing `aeon-skill` kind is unchanged. if the script is missing the kind, `epoch-prove` stops with `PROVE_UNSUPPORTED` and posts nothing.
+  the copy of `dev-loop-proof.sh` is aeon's own script plus the new receipt kind; the existing `aeon-skill` kind is unchanged. if any piece is missing, `epoch-prove` stops with `PROVE_UNSUPPORTED` and posts nothing. a proof made before you updated (a run titled by dispatch id only) no longer counts; run `epoch-prove` again.
 - to prove prs in a repo other than your aeon repo, that repo needs `.github/workflows/epoch-verify.yml` on its default branch too. `epoch-prove` refuses a pr whose copy of that file differs from the default branch's.
 
 ## how it knows it is done
@@ -105,6 +105,8 @@ a model saying "looks good" is not evidence, so review and proof are receipts: o
 `scripts/dev-loop-review.sh` and `scripts/dev-loop-proof.sh` re-read the comment from github and check the commit, the target and the shape. nothing is trusted from a file a skill wrote locally. push another commit and the commit changes, so both receipts stop counting until the new head is reviewed and proven again.
 
 the proof receipt points at an actions run. `epoch-prove` takes the verify commands from the work order in your aeon repo (found by the pr's `epoch/<order>` branch name), never from the pr, runs them through `epoch-verify.yml` (read-only, no secrets), and posts the receipt only if the run's log shows every command with `exit=0` at the pinned commit.
+
+the gate does not take the receipt's word for the run. it reads the run from github and requires: a successful `workflow_dispatch` run of `epoch-verify.yml` at the pinned commit, dispatched by the account that posted the receipt; a workflow file identical to the default branch's copy; a run title that carries the sha256 of the commands it ran, equal to the sha256 of the `VERIFY` block of the order on the default branch; and a pr branch named `epoch/<order>`. so a green run of some other command, or of an edited workflow, is not proof of the order.
 
 `epoch-watch` calls a pr merge-ready only when all of these hold at the same commit:
 
@@ -127,7 +129,31 @@ the "is this pr really ready" check does not need aeon. `scripts/epoch-check.sh`
     pr: ${{ github.event.pull_request.number }}
 ```
 
-any agent, or a person, can post a valid receipt, so you can adopt the check without the rest of epoch. the format and the ten-line workflow are in [docs/epoch-check.md](docs/epoch-check.md).
+any agent, or a person, can post a valid receipt, so you can adopt the check without the rest of epoch. you name the accounts whose receipts count with `trusted-actors` (required), and receipts from the pr's own author are ignored unless you allow them. the format and the ten-line workflow are in [docs/epoch-check.md](docs/epoch-check.md).
+
+## trust model
+
+what the gate enforces, at one head commit:
+
+- a receipt counts only if a trusted account posted it. in `epoch-check` the list of accounts is required; in the aeon gates it is the account behind the instance token.
+- a receipt counts only at the exact commit it names. a new push voids both. duplicates void themselves: exactly one per kind per commit.
+- the proof run has to be the pinned `epoch-verify` workflow, dispatched by the account that posted the receipt, running the hash of the commands in the order on the default branch. the pr can edit its own code but not the order or the verifier that judge it.
+- the order is found by the branch name `epoch/<order>`, from a branch in the same repo, never from the pr body.
+
+what it assumes:
+
+- one github token per instance means one account does the building, the reviewing and the proving. the receipts then show that the pipeline ran, not that three independent parties agreed. use separate accounts for build and for review and proof if you want that, and keep `allow-author-receipts` off.
+- a human reads the pr and presses merge. the gate says what is missing; it does not decide to merge.
+- nothing else merges epoch branches. an auto-merge skill, a merge queue rule or a bot that merges green prs on its own will not look at these receipts. keep epoch branches out of their paths.
+- the default branch is protected from the accounts that build. whoever can change the order or `epoch-verify.yml` there can change what counts.
+- the commands in an order are the ones you want run. a passing run proves they passed, not that they test the right thing.
+
+what it does not do:
+
+- it does not make the pipeline tamper-proof. a stolen token can post a receipt, dispatch a run and edit its own comments.
+- it does not read the code. a review receipt is one reviewer's verdict, not a guarantee.
+- it does not check `aeon-skill` receipts beyond their shape.
+- it does not cover prs from forks, and it does not stop a person with write access from merging by hand.
 
 ## limits, said plainly
 
