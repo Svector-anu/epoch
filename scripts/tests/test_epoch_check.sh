@@ -65,7 +65,22 @@ run_case proof_old_sha 1 needs-prove "comments::[.[0], (.[1] | .body |= gsub(\"$
 run_case proof_two_receipts 1 needs-prove "comments::. + [$(proof_comment "$SHA" '{}' other-bot)]"
 run_case proof_forged_keys 1 needs-prove "comments::[.[0], (.[1] | .body |= sub(\"\\\"kind\\\":\\\"verify-run\\\"\"; \"\\\"kind\\\":\\\"verify-run\\\",\\\"skill\\\":\\\"x\\\"\"))]"
 run_case proof_other_repo_url 1 needs-prove "comments::[.[0], $(proof_comment "$SHA" '{"evidence_url":"https://github.com/evil/other/actions/runs/99"}' prover-bot)]"
-run_case proof_aeon_skill_ok 0 merge-ready "comments::[.[0], $(proof_comment "$SHA" '{"kind":"aeon-skill","skill":"epoch-prove"}' prover-bot | jq -c '.body |= sub("\"order\":\"build-it\",?"; "")')]"
+run_case proof_aeon_skill_on_epoch_branch 1 needs-prove "comments::[.[0], $(proof_comment "$SHA" '{"kind":"aeon-skill","skill":"epoch-prove"}' prover-bot | jq -c '.body |= sub("\"order\":\"build-it\",?"; "")')]"
+# an aeon-skill receipt is shape-only; it stays acceptable off epoch/ branches, which have no order to bind to
+d=$WORK/proof_aeon_skill_other_branch
+base "$d"
+jq '.head.ref = "feature/plain"' "$d/$(stub_name "repos/$REPO/pulls/7")" > "$d/.tmp" && mv "$d/.tmp" "$d/$(stub_name "repos/$REPO/pulls/7")"
+jq "[.[0], $(proof_comment "$SHA" '{"kind":"aeon-skill","skill":"epoch-prove"}' prover-bot | jq -c '.body |= sub("\"order\":\"build-it\",?"; "")')]" "$d/comments.json" > "$d/tmp" && mv "$d/tmp" "$d/comments.json"
+sync_comments "$d"
+code=0
+out=$(GH_STUB_DIR=$d "$CHECK" "$TARGET" --json --fixture "$d" --trusted-actors "$TRUSTED") || code=$?
+next=$(jq -r .next <<<"$out")
+if [ "$code" = 0 ] && [ "$next" = merge-ready ]; then
+  pass=$((pass + 1)); printf 'ok   %-28s exit=%s next=%s\n' proof_aeon_skill_other_branch "$code" "$next"
+else
+  fail=$((fail + 1)); printf 'FAIL %-28s exit=%s (want 0) next=%s (want merge-ready)\n' proof_aeon_skill_other_branch "$code" "$next"
+fi
+
 run_case proof_bad_verdict 1 needs-prove "comments::[.[0], $(proof_comment "$SHA" '{"verdict":"claimed"}' prover-bot)]"
 
 # head moved between two reads: pr2.json is the second read

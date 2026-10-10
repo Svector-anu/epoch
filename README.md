@@ -152,7 +152,7 @@ what it does not do:
 
 - it does not make the pipeline tamper-proof. a stolen token can post a receipt, dispatch a run and edit its own comments.
 - it does not read the code. a review receipt is one reviewer's verdict, not a guarantee.
-- it does not check `aeon-skill` receipts beyond their shape.
+- it does not check `aeon-skill` receipts beyond their shape, so `epoch-check` accepts one only off `epoch/` branches; a pull request on an `epoch/` branch needs the `verify-run` proof bound to its order.
 - it does not cover prs from forks, and it does not stop a person with write access from merging by hand.
 
 ## limits, said plainly

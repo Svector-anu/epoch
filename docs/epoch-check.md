@@ -93,7 +93,7 @@ a `verify-run` proof is only as good as the run behind it, so the check reads th
 - is titled `epoch-verify <sha> <sha256 of commands> verify-<id>`, and that hash equals the hash of the `VERIFY` block of the order `memory/topics/*/orders/<order>.md` on the default branch of the order repo
 - belongs to a pr from the same repo whose branch is `epoch/<order>`
 
-if any of that cannot be read or does not match, the proof is `invalid` and the pr is `needs-prove`. `aeon-skill` receipts keep their shape check only.
+if any of that cannot be read or does not match, the proof is `invalid` and the pr is `needs-prove`. `aeon-skill` receipts keep their shape check only, and are refused on `epoch/` branches, where the order is known and a `verify-run` proof is required.
 
 ## emitting a receipt from any agent
 

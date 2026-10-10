@@ -264,7 +264,18 @@ main() {
 
   local result evidence_error=""
   result=$(decide "") || die "could not evaluate the pull request state (unexpected input shape)"
-  if [ "$(jq -r '.proof.receipt.kind // ""' <<<"$result")" = verify-run ]; then
+  if [ "$(jq -r '.proof.receipt.kind // ""' <<<"$result")" = aeon-skill ]; then
+    # an aeon-skill receipt is shape-only: it names a run but nothing ties it to an order. a pull request
+    # on an epoch/ branch has an order, so it needs the verify-run proof that is bound to it.
+    command -v gh >/dev/null || die "gh is required to look up the pull request branch"
+    local head_ref
+    head_ref=$(gh api "repos/${target%#*}/pulls/${target##*#}" --jq .head.ref 2>/dev/null) \
+      || die "could not read the pull request branch"
+    if [[ "$head_ref" == epoch/* ]]; then
+      evidence_error="a pull request on an epoch/ branch needs a verify-run proof; an aeon-skill receipt is not bound to the order"
+      result=$(decide "$evidence_error") || die "could not evaluate the pull request state (unexpected input shape)"
+    fi
+  elif [ "$(jq -r '.proof.receipt.kind // ""' <<<"$result")" = verify-run ]; then
     command -v gh >/dev/null || die "gh is required to look up the evidence run"
     evidence_error=$(bash "$HERE/epoch-evidence.sh" check "$target" "$(jq -r .sha <<<"$result")" \
       "$(jq -c .proof.receipt <<<"$result")" "$order_repo" "$(jq -r '.proof.by[0]' <<<"$result")" 2>&1 >/dev/null) \
