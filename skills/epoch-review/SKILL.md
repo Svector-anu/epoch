@@ -94,15 +94,15 @@ If build and review ran on the same model family, say that in your result. Fresh
    the gate reads, and if the count is not zero, stop without posting and report
    the existing receipt:
 
-   Run the gate's own count, so "a receipt exists" means exactly what
+   `gh api` returns 30 reviews unless told otherwise, so read every page. Run the gate's own count, so "a receipt exists" means exactly what
    `scripts/dev-loop-review.sh verify` means by it - this account's reviews at
    this SHA, a missing body treated as empty, the literal receipt prefix:
 
    ```
    actor=$(gh api user --jq .login)
-   gh api repos/<owner>/<repo>/pulls/<N>/reviews \
-     | jq --arg actor "$actor" --arg sha "<sha>" \
-       '[.[] | select(.user.login == $actor and .commit_id == $sha) | .body // empty | select(contains("<!-- aeon-review:"))] | length'
+   gh api --paginate "repos/<owner>/<repo>/pulls/<N>/reviews?per_page=100" \
+     | jq -s --arg actor "$actor" --arg sha "<sha>" \
+       '[.[][] | select(.user.login == $actor and .commit_id == $sha) | .body // empty | select(contains("<!-- aeon-review:"))] | length'
    ```
 
    Use `--comment`, never `--approve`: when this account authored the PR, GitHub refuses a self-approval, and the verdict rides in the receipt rather than in GitHub's approval state.

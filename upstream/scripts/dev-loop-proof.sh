@@ -2,6 +2,8 @@
 # a sha-bound receipt prevents a successful wrapper or model claim from passing as live proof.
 set -euo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
 usage() {
   echo "usage: $0 parse <owner/repo#pr> <40-char-head-sha> <proof-body-file> | verify <owner/repo#pr> <40-char-head-sha>" >&2
   exit 64
@@ -92,23 +94,21 @@ fetch_verified_body() {
   ' "$comments"
 }
 
-# parse only checks the receipt's shape. For verify-run the evidence must also be
-# a real, finished, successful epoch-verify run of this exact head, so ask GitHub.
+# parse only checks the receipt's shape. For verify-run the evidence must also be a real run of
+# this order's commands, by the pinned workflow, at this head, dispatched by the account that
+# posted the receipt. epoch-evidence.sh holds that logic; epoch-check.sh calls the same script.
 check_verify_run_evidence() {
-  local target="$1" sha="$2" receipt="$3" repo run_id run
+  local target="$1" sha="$2" receipt="$3" actor order_repo
   [ "$(printf '%s' "$receipt" | jq -r .kind)" = "verify-run" ] || return 0
-  repo=${target%#*}
-  run_id=$(printf '%s' "$receipt" | jq -r .evidence_run_id)
-  run=$(gh api "repos/$repo/actions/runs/$run_id") || {
-    echo "dev-loop proof: could not read evidence run $run_id" >&2
+  [ -f "$SCRIPT_DIR/epoch-evidence.sh" ] || {
+    echo "dev-loop proof: scripts/epoch-evidence.sh is missing next to this script (copy it from the epoch pack's upstream/ folder)" >&2
     return 1
   }
-  printf '%s' "$run" | jq -e --arg sha "$sha" --argjson id "$run_id" '
-    type == "object" and .id == $id and
-    ((.path // "") | sub("@.*\\z"; "")) == ".github/workflows/epoch-verify.yml" and
-    .head_sha == $sha and .status == "completed" and .conclusion == "success"
-  ' >/dev/null 2>&1 || {
-    echo "dev-loop proof: evidence run $run_id is not a successful epoch-verify run at $sha" >&2
+  actor=$(gh api user --jq .login)
+  order_repo=${EPOCH_ORDER_REPO:-${GITHUB_REPOSITORY:-}}
+  [ -n "$order_repo" ] || order_repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+  bash "$SCRIPT_DIR/epoch-evidence.sh" check "$target" "$sha" "$receipt" "$order_repo" "$actor" || {
+    echo "dev-loop proof: the evidence run is not a faithful epoch-verify run of this order at $sha" >&2
     return 1
   }
 }

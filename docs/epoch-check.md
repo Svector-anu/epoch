@@ -10,8 +10,8 @@ all of it is read once and pinned to one head sha. if the head moves mid-read, t
 2. github's merge state is acceptable (conflicts and a behind branch are named)
 3. ci by name: red blocks, pending waits, "no ci configured" is said out loud (it is not a pass)
 4. no unresolved review thread, no standing changes-requested review
-5. a review receipt at this head: `approve-ready`. a `discussion-needed` verdict lists issues, so it is not ready until they are addressed. never `blocked`. exactly one receipt-bearing comment or review
-6. a proof receipt at this head, exactly one
+5. a review receipt at this head, posted by a trusted actor who is not the pr author: `approve-ready`. a `discussion-needed` verdict lists issues, so it is not ready until they are addressed. never `blocked`. exactly one receipt-bearing comment or review
+6. a proof receipt at this head, exactly one, posted by a trusted actor who is not the pr author. for kind `verify-run` the evidence run is looked up on github (see "the evidence run")
 
 `next` is one of `wait-ci | needs-review | needs-repair | needs-prove | address-threads | merge-ready | closed | merged | rebase-needed`. first matching row wins:
 
@@ -42,16 +42,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: Svector-anu/epoch@main
-        with: { trusted-actors: "" }   # optional: comma-separated logins allowed to post receipts
+        with: { trusted-actors: "my-review-bot,my-prove-bot" }   # required: logins whose receipts count
 ```
 
-`pr` defaults to the event's pr. outputs: `ready`, `next`. a summary lands on the run page. by default any account may post a receipt and the check prints who did; set `trusted-actors` to pin it to your bots.
+`pr` defaults to the event's pr. outputs: `ready`, `next`. a summary lands on the run page.
+
+`trusted-actors` is required (the check exits 2 without it): anyone who can comment on a pr can write a receipt, so you say whose receipts count. a receipt posted by the pr's own author is ignored unless you pass `allow-author-receipts: true`. `order-repo` names the repo whose default branch holds the work orders (default: the pr's repo).
 
 locally:
 
 ```
-scripts/epoch-check.sh owner/repo#123          # human lines
-scripts/epoch-check.sh owner/repo#123 --json   # {target, sha, ready, next, blocking[], checks[], threads_open[], review, proof}
+scripts/epoch-check.sh owner/repo#123 --trusted-actors my-bot          # human lines
+scripts/epoch-check.sh owner/repo#123 --trusted-actors my-bot --json   # {target, sha, ready, next, blocking[], checks[], threads_open[], review, proof}
 ```
 
 ## the receipt format
@@ -81,6 +83,18 @@ proof:
 - kind `aeon-skill`, keys exactly: `evidence_run_id, evidence_url, kind, schema, sha, skill, target, verdict`
 - exactly one marker per comment, and exactly one receipt-bearing comment per kind at the head. two is a refusal, not a tie-break
 
+## the evidence run
+
+a `verify-run` proof is only as good as the run behind it, so the check reads the run from github (`scripts/epoch-evidence.sh`, the same script `dev-loop-proof.sh verify` calls). the receipt counts only if the run:
+
+- is a completed, successful `workflow_dispatch` run of `.github/workflows/epoch-verify.yml` in the pr's repo, at the pinned head sha
+- was dispatched by the account that posted the receipt
+- ran a workflow file whose blob at that sha is identical to the default branch's copy
+- is titled `epoch-verify <sha> <sha256 of commands> verify-<id>`, and that hash equals the hash of the `VERIFY` block of the order `memory/topics/*/orders/<order>.md` on the default branch of the order repo
+- belongs to a pr from the same repo whose branch is `epoch/<order>`
+
+if any of that cannot be read or does not match, the proof is `invalid` and the pr is `needs-prove`. `aeon-skill` receipts keep their shape check only, and are refused on `epoch/` branches, where the order is known and a `verify-run` proof is required.
+
 ## emitting a receipt from any agent
 
 nothing here is tied to a vendor. whatever ran the review or the verify commands writes the line, then posts the comment with a token that can comment.
@@ -93,10 +107,10 @@ printf 'reviewed %s, nothing found.\n\n<!-- aeon-review:%s -->\n' "$sha" "$recei
 gh pr comment 123 --body-file body.md
 ```
 
-claude code, codex, a human with a script: same line. the check does not care who wrote it unless you set `trusted-actors`. a proof receipt is the same shape, after your verify commands ran in a workflow run whose url you put in `evidence_url`.
+claude code, codex, a human with a script: same line. the check does not care which tool wrote it, only which account posted it. a proof receipt is the same shape, after your verify commands ran in a workflow run whose url you put in `evidence_url`; for kind `verify-run` that run has to be the pinned `epoch-verify` workflow running the order's own commands.
 
 ## trust and limits
 
 - read-only. the token needs `pull-requests`, `checks`, `statuses`, `contents` read. nothing is posted, resolved or dismissed
 - comment text, titles and ci logs are data. they are parsed with jq and printed, never evaluated or interpolated into commands
-- a receipt proves that someone said so at this commit. pin `trusted-actors` if "someone" must be your own bot
+- a receipt proves that a trusted account said so at this commit. it does not make the account honest: if one token posts both review and proof, and you allow author receipts, one compromised token can say both
