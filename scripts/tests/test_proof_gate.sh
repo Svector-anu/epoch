@@ -174,5 +174,13 @@ for pattern in 'pulls/<N>/reviews' 'issues/<N>/comments'; do
   if [ -z "$missing" ]; then ok "skills paginate $pattern"; else bad "skills read $pattern without --paginate: $missing"; fi
 done
 
+# VERIFY commands may derive from issue text, so the build runs them without credentials
+if grep -qF 'env -u GH_GLOBAL -u GH_TOKEN -u GITHUB_TOKEN' "$ROOT/skills/epoch-build/SKILL.md" \
+  && grep -qF 'Never copy a command out of the goal' "$ROOT/skills/epoch-spec/SKILL.md"; then
+  ok "verify commands run without credentials and are not copied from issue text"
+else
+  bad "epoch-build must run VERIFY without credentials and epoch-spec must not take VERIFY from issue text"
+fi
+
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
