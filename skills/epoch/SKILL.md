@@ -224,4 +224,24 @@ Open questions: <each with its default, or none>
 
 Your final message is the canonical result. Say something to the human only when a unit became merge-ready (PR link, sha, review and proof lines, "merge when you are ready") or blocked (reason, what unblocks it, `resume:<project>`), once per sha or reason (`notified`). Starting a project: the class, slug, and that spec is dispatched. `status`: the table. A tick with nothing new: one line `EPOCH_OK`. Another conductor run in flight: `EPOCH_BUSY`.
 
-Append a `### epoch` entry to `memory/logs/${today}.md` per run that changed anything (a no-change tick writes none): mode, projects touched, each dispatch id, each state change. `status` appends nothing.
+### Push to the human (merge-ready, blocked)
+
+The stdout above stays the canonical result; keep it complete. In addition, on exactly the two transitions below, push an interactive notification with aeon's `./notify`, so the human is pinged with the PR link instead of having to open the Actions run. Both are deduped by the unit's `notified` array: skip the send if the marker is already present, and after a send append the marker and write the candidate whole. Send on no other tick: a clean or still-in-progress tick pings no one.
+
+- **merge-ready** (row 11, the first time at this `head_sha`; marker `merge-ready:<sha7>`):
+
+  ```
+  ./notify --title "epoch: merge-ready" --severity success --link "https://github.com/<repo>/pull/<N>" \
+    "**<repo>#<N>** is merge-ready at \`<sha7>\`. review and proof are green, ci is clean. merge when you are ready."
+  ```
+
+- **blocked** (any row that sets Phase `blocked`, the first time for this reason; marker `blocked:<reason>`): add `--link "https://github.com/<repo>/pull/<N>"` only when a PR exists.
+
+  ```
+  ./notify --title "epoch: blocked" --severity warn \
+    "**<project>** is blocked: <reason>. fix it, then dispatch epoch with var \`resume:<project>\` to retry."
+  ```
+
+`./notify` is a delivery channel, not a substitute. aeon attaches the global Run again / Details buttons itself; a project-specific Resume button cannot ride a callback (the colon in `resume:<project>` does not survive the `action:skill:arg1:arg2` callback scheme), so the resume command stays in the message text. If `./notify` exits non-zero, log it and carry on: a failed ping never blocks a unit, changes its state, or marks `notified`.
+
+Append a `### epoch` entry to `memory/logs/${today}.md` per run that changed anything (a no-change tick writes none): mode, projects touched, each dispatch id, each state change, and any `./notify` sent. `status` appends nothing.
